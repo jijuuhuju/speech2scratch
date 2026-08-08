@@ -9,12 +9,11 @@
   </head>
   <body>
     <style>
-      /* ここで縮小 */
       html {
         transform: scale(0.85) !important;
         transform-origin: top left !important;
-        width: 117.64% !important;
-        height: 117.64% !important;
+        width: 117.64705882352942% !important;
+        height: 117.64705882352942% !important;
         overflow: hidden !important;
         position: absolute !important;
         top: 0 !important;
@@ -29,50 +28,96 @@
       [class*="menu-bar_menu-bar_"] { background-color: #00d631 !important; }
     </style>
     
-    <!--当たり判定を治す -->
     <script type="text/javascript">
       (function() {
         const SCALE = 0.85;
-        const properties = ['clientX', 'clientY', 'pageX', 'pageY', 'screenX', 'screenY'];
-        
-        // 関数
-        function patchProperty(cls, prop) {
-          if (!cls || !cls.prototype) return;
-          let proto = cls.prototype;
-          let descriptor = null;
+        const PATCHED_MARK = Symbol('patched');
+
+        // 1. 座標の安全な書き換え（二重処理を完全にガード）
+        function patchEvent(e) {
+          if (!e || e[PATCHED_MARK]) return;
+          e[PATCHED_MARK] = true;
+
+          const props = ['clientX', 'clientY', 'pageX', 'pageY', 'screenX', 'screenY'];
           
-          // ゲッターが見つかるまで親のプロトタイプを遡る
-          while (proto && !descriptor) {
-            descriptor = Object.getOwnPropertyDescriptor(proto, prop);
-            if (!descriptor) proto = Object.getPrototypeOf(proto);
-          }
-          
-          // 見つかったゲッターを強制的に 1 / 0.85 倍にする
-          if (descriptor && descriptor.configurable && descriptor.get) {
-            const originalGetter = descriptor.get;
-            Object.defineProperty(proto, prop, {
-              get: function() {
-                return originalGetter.call(this) / SCALE;
-              },
-              configurable: true
-            });
-          }
+          props.forEach(prop => {
+            if (typeof e[prop] === 'number') {
+              const originalValue = e[prop];
+              Object.defineProperty(e, prop, {
+                value: originalValue / SCALE,
+                configurable: true,
+                writable: true
+              });
+            }
+          });
+
+          ['touches', 'targetTouches', 'changedTouches'].forEach(touchListProp => {
+            if (e[touchListProp] && e[touchListProp].length) {
+              for (let i = 0; i < e[touchListProp].length; i++) {
+                const touch = e[touchListProp][i];
+                if (touch && !touch[PATCHED_MARK]) {
+                  touch[PATCHED_MARK] = true;
+                  props.forEach(prop => {
+                    if (typeof touch[prop] === 'number') {
+                      const originalTouchValue = touch[prop];
+                      Object.defineProperty(touch, prop, {
+                        value: originalTouchValue / SCALE,
+                        configurable: true,
+                        writable: true
+                      });
+                    }
+                  });
+                }
+              }
+            }
+          });
         }
 
-        // iPad環境で発生するすべてのイベントクラスに対して実行
-        const classesToPatch = [
-          window.Touch,
-          window.PointerEvent,
-          window.MouseEvent,
-          window.TouchEvent,
-          window.UIEvent
-        ];
+        // ラッパー関数を管理するマップ（removeEventListener のバグ対策）
+        const listenerMap = new WeakMap();
 
-        classesToPatch.forEach(cls => {
-          properties.forEach(prop => patchProperty(cls, prop));
-        });
+        // addEventListener のフック
+        const originalAddEventListener = EventTarget.prototype.addEventListener;
+        EventTarget.prototype.addEventListener = function(type, listener, options) {
+          const targetEvents = [
+            'mousedown', 'mousemove', 'mouseup', 
+            'touchstart', 'touchmove', 'touchend', 'touchcancel',
+            'pointerdown', 'pointermove', 'pointerup', 'pointercancel',
+            'click', 'dblclick', 'contextmenu'
+          ];
+          
+          if (targetEvents.includes(type) && typeof listener === 'function') {
+            const wrappedListener = function(e) {
+              patchEvent(e);
+              return listener.call(this, e);
+            };
 
-        // エディタ各パーツの「見た目の基準位置」のズレも同時に相殺
+            // メモリリークを防ぎつつ元の関数とラッパーを紐付け
+            if (!listenerMap.has(this)) {
+              listenerMap.set(this, new Map());
+            }
+            listenerMap.get(this).set(listener, wrappedListener);
+
+            return originalAddEventListener.call(this, type, wrappedListener, options);
+          }
+          return originalAddEventListener.call(this, type, listener, options);
+        };
+
+        // removeEventListener もフックして解除を確実に成功させる
+        const originalRemoveEventListener = EventTarget.prototype.removeEventListener;
+        EventTarget.prototype.removeEventListener = function(type, listener, options) {
+          if (typeof listener === 'function' && listenerMap.has(this)) {
+            const targetMap = listenerMap.get(this);
+            const wrappedListener = targetMap.get(listener);
+            if (wrappedListener) {
+              targetMap.delete(listener);
+              return originalRemoveEventListener.call(this, type, wrappedListener, options);
+            }
+          }
+          return originalRemoveEventListener.call(this, type, listener, options);
+        };
+
+        // 2. getBoundingClientRect の安全な倍率補正
         const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
         Element.prototype.getBoundingClientRect = function() {
           const rect = originalGetBoundingClientRect.call(this);
@@ -83,8 +128,8 @@
             bottom: rect.bottom / SCALE,
             width: rect.width / SCALE,
             height: rect.height / SCALE,
-            x: rect.x / SCALE,
-            y: rect.y / SCALE
+            x: (rect.x ?? rect.left) / SCALE,
+            y: (rect.y ?? rect.top) / SCALE
           };
         };
       })();
