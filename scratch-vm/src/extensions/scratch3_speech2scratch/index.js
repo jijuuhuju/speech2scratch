@@ -60,12 +60,12 @@ class Scratch3Speech2Scratch {
                 {
                     opcode: 'startRecognition',
                     blockType: BlockType.COMMAND,
-                    text: '音声認識開始'
+                    text: '音声の認識を始める'
                 },
                 {
                     opcode: 'getSpeech',
                     blockType: BlockType.REPORTER,
-                    text: '音声'
+                    text: '聞き取れた音声'
                 }
             ],
             menus: {
